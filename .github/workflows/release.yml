@@ -50,29 +50,41 @@ jobs:
           tag_name: ${{ steps.get_version.outputs.version }}
           name: ${{ steps.get_version.outputs.version }}
           body: |
-            ## Centy Installer ${{ steps.get_version.outputs.version }}
+            ## Centy CLI ${{ steps.get_version.outputs.version }}
 
             ### Quick Install
 
+            **Via npm/pnpm (recommended):**
+            ```bash
+            pnpm dlx centy
+            # or
+            npx centy
+            ```
+
+            **Via shell script:**
             ```bash
             curl -fsSL https://github.com/${{ github.repository }}/releases/latest/download/install.sh | sh
             ```
 
             ### What gets installed
 
+            - `centy` - Centy CLI (runs centy-tui by default)
             - `centy-daemon` - Centy daemon service
             - `centy-tui` - Centy terminal UI
+
+            ### Usage
+
+            ```bash
+            centy              # Run centy-tui (installs if needed)
+            centy install tui  # Install centy-tui
+            centy run daemon   # Run centy-daemon
+            centy setup        # Install all default binaries
+            ```
 
             ### Installation location
 
             - Binaries: `~/.centy/versions/{binary}/{version}/`
             - Symlinks: `~/.centy/bin/{binary}`
-
-            ### Environment variables
-
-            - `BINARIES` - Space-separated list of binaries to install
-            - `VERSION` - Specific version to install
-            - `INSTALL_DIR` - Custom installation directory
           draft: false
           prerelease: false
           files: |
@@ -145,3 +157,27 @@ jobs:
         with:
           tag_name: ${{ needs.release.outputs.version }}
           files: ${{ matrix.name }}
+
+  publish-npm:
+    name: Publish to npm
+    needs: [release, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Update package version
+        run: |
+          VERSION="${{ needs.release.outputs.version }}"
+          VERSION="${VERSION#v}"  # Remove 'v' prefix
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+
+      - name: Publish to npm
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

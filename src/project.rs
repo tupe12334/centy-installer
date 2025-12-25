@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Project {
+    CentyDaemon,
     Tui,
+    CentyDaemonTui,
     TuiManager,
 }
 
@@ -12,7 +14,9 @@ impl Project {
     /// Get the project name as used in paths
     pub fn name(&self) -> &'static str {
         match self {
-            Project::Tui => "tui",
+            Project::CentyDaemon => "centy-daemon",
+            Project::Tui => "centy-tui",
+            Project::CentyDaemonTui => "centy-daemon-tui",
             Project::TuiManager => "tui-manager",
         }
     }
@@ -20,7 +24,9 @@ impl Project {
     /// Get the display name of the project
     pub fn display_name(&self) -> &'static str {
         match self {
+            Project::CentyDaemon => "Centy Daemon",
             Project::Tui => "Centy TUI",
+            Project::CentyDaemonTui => "Centy Daemon TUI",
             Project::TuiManager => "TUI Manager",
         }
     }
@@ -28,7 +34,9 @@ impl Project {
     /// Get the binary name for this project
     pub fn binary_name(&self) -> &'static str {
         match self {
+            Project::CentyDaemon => "centy-daemon",
             Project::Tui => "centy-tui",
+            Project::CentyDaemonTui => "centy-daemon-tui",
             Project::TuiManager => "tui-manager",
         }
     }
@@ -36,20 +44,29 @@ impl Project {
     /// Get the GitHub repository name
     pub fn repo_name(&self) -> &'static str {
         match self {
+            Project::CentyDaemon => "centy-daemon",
             Project::Tui => "centy-tui",
+            Project::CentyDaemonTui => "centy-daemon-tui",
             Project::TuiManager => "tui-manager",
         }
     }
 
     /// Get all available projects
     pub fn all() -> &'static [Project] {
-        &[Project::Tui, Project::TuiManager]
+        &[
+            Project::CentyDaemon,
+            Project::Tui,
+            Project::CentyDaemonTui,
+            Project::TuiManager,
+        ]
     }
 
     /// Parse a project from a string
     pub fn parse(s: &str) -> Option<Project> {
         match s.to_lowercase().as_str() {
-            "tui" | "centy-tui" => Some(Project::Tui),
+            "daemon" | "centy-daemon" | "centydaemon" => Some(Project::CentyDaemon),
+            "tui" | "centy-tui" | "centytui" => Some(Project::Tui),
+            "daemon-tui" | "centy-daemon-tui" | "centydaemontui" => Some(Project::CentyDaemonTui),
             "tui-manager" | "tuimanager" | "manager" => Some(Project::TuiManager),
             _ => None,
         }

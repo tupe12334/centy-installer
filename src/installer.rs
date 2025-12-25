@@ -1,11 +1,17 @@
 use crate::error::{InstallerError, Result};
 use crate::paths::InstallPaths;
 use crate::project::Project;
+use flate2::read::GzDecoder;
 use futures_util::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
+use std::fs::File;
 use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
+use tar::Archive;
+use tempfile::TempDir;
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 /// Configuration for the installer
 #[derive(Debug, Clone)]
@@ -58,13 +64,10 @@ impl Installer {
         &self.paths
     }
 
-    /// Build the download URL for a binary
-    fn build_download_url(&self, project: &Project, version: &str) -> String {
+    /// Get the target triple for the current platform
+    fn get_target() -> (String, String) {
         let os = std::env::consts::OS;
         let arch = std::env::consts::ARCH;
-
-        // Arch name from Rust's ARCH constant
-        let arch_name = arch;
 
         // Map Rust OS names to common naming conventions
         let os_name = match os {
@@ -74,29 +77,45 @@ impl Installer {
             _ => os,
         };
 
-        let target = format!("{}-{}", arch_name, os_name);
+        // Get archive extension based on OS
+        let ext = match os {
+            "windows" => "zip",
+            _ => "tar.gz",
+        };
+
+        (format!("{}-{}", arch, os_name), ext.to_string())
+    }
+
+    /// Build the download URL for a binary
+    /// Format: {binary}-v{version}-{arch}-{os}.{ext}
+    /// Example: centy-daemon-v0.1.6-x86_64-apple-darwin.tar.gz
+    fn build_download_url(&self, project: &Project, version: &str) -> (String, String) {
+        let (target, ext) = Self::get_target();
         let binary_name = project.binary_name();
 
-        if let Some(base_url) = &self.config.download_base_url {
-            format!(
-                "{}/{}/{}/{}-{}",
-                base_url,
-                project.name(),
-                version,
-                binary_name,
-                target
-            )
+        // Ensure version has 'v' prefix
+        let version_tag = if version.starts_with('v') {
+            version.to_string()
+        } else {
+            format!("v{}", version)
+        };
+
+        let archive_name = format!("{}-{}-{}.{}", binary_name, version_tag, target, ext);
+
+        let url = if let Some(base_url) = &self.config.download_base_url {
+            format!("{}/{}/{}/{}", base_url, project.name(), version, archive_name)
         } else {
             // GitHub releases URL
             format!(
-                "https://github.com/{}/{}/releases/download/v{}/{}-{}",
+                "https://github.com/{}/{}/releases/download/{}/{}",
                 self.config.github_org,
                 project.repo_name(),
-                version,
-                binary_name,
-                target
+                version_tag,
+                archive_name
             )
-        }
+        };
+
+        (url, ext)
     }
 
     /// Install a specific version of a project
@@ -110,14 +129,23 @@ impl Installer {
             version
         );
 
-        // Ensure directories exist
+        // Ensure directories exist (including bin dir for symlinks)
         self.paths.ensure_dirs(project_name, version)?;
+        std::fs::create_dir_all(self.paths.bin_dir())?;
 
         let binary_path = self.paths.binary_path(project_name, version, binary_name);
 
-        // Download the binary
-        let url = self.build_download_url(&project, version);
-        self.download_binary(&url, &binary_path).await?;
+        // Create temp directory for download
+        let temp_dir = TempDir::new().map_err(|e| InstallerError::IoError(e.to_string()))?;
+
+        // Download the archive
+        let (url, ext) = self.build_download_url(&project, version);
+        let archive_path = temp_dir.path().join(format!("download.{}", ext));
+        self.download_binary(&url, &archive_path).await?;
+
+        // Extract the binary from archive
+        println!("Extracting...");
+        self.extract_binary(&archive_path, &ext, binary_name, &binary_path)?;
 
         // Make executable
         #[cfg(unix)]
@@ -127,14 +155,123 @@ impl Installer {
             std::fs::set_permissions(&binary_path, perms)?;
         }
 
+        // Create symlink
+        let symlink_path = self.paths.symlink_path(binary_name);
+        self.create_symlink(&binary_path, &symlink_path)?;
+
         println!(
             "Successfully installed {} {} to {}",
             project.display_name(),
             version,
             binary_path.display()
         );
+        println!("Symlink: {}", symlink_path.display());
 
         Ok(binary_path)
+    }
+
+    /// Extract binary from archive
+    fn extract_binary(
+        &self,
+        archive_path: &PathBuf,
+        ext: &str,
+        binary_name: &str,
+        dest_path: &PathBuf,
+    ) -> Result<()> {
+        match ext {
+            "tar.gz" => {
+                let file = File::open(archive_path)?;
+                let decoder = GzDecoder::new(file);
+                let mut archive = Archive::new(decoder);
+
+                // Extract to temp location first
+                let temp_extract = archive_path.parent().unwrap().join("extracted");
+                std::fs::create_dir_all(&temp_extract)?;
+                archive.unpack(&temp_extract)?;
+
+                // Find and move the binary
+                let found = self.find_binary_in_dir(&temp_extract, binary_name)?;
+                if let Some(parent) = dest_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::copy(&found, dest_path)?;
+                Ok(())
+            }
+            "zip" => {
+                let file = File::open(archive_path)?;
+                let mut archive = zip::ZipArchive::new(file)
+                    .map_err(|e| InstallerError::ExtractFailed(e.to_string()))?;
+
+                let temp_extract = archive_path.parent().unwrap().join("extracted");
+                std::fs::create_dir_all(&temp_extract)?;
+                archive
+                    .extract(&temp_extract)
+                    .map_err(|e| InstallerError::ExtractFailed(e.to_string()))?;
+
+                let found = self.find_binary_in_dir(&temp_extract, binary_name)?;
+                if let Some(parent) = dest_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::copy(&found, dest_path)?;
+                Ok(())
+            }
+            _ => Err(InstallerError::ExtractFailed(format!(
+                "Unknown archive format: {}",
+                ext
+            ))),
+        }
+    }
+
+    /// Find binary in extracted directory (searches recursively)
+    fn find_binary_in_dir(&self, dir: &PathBuf, binary_name: &str) -> Result<PathBuf> {
+        // First check directly in dir
+        let direct = dir.join(binary_name);
+        if direct.exists() && direct.is_file() {
+            return Ok(direct);
+        }
+
+        // Search recursively
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if path.is_file() {
+                if let Some(name) = path.file_name() {
+                    if name == binary_name {
+                        return Ok(path);
+                    }
+                }
+            } else if path.is_dir() {
+                if let Ok(found) = self.find_binary_in_dir(&path, binary_name) {
+                    return Ok(found);
+                }
+            }
+        }
+
+        Err(InstallerError::BinaryNotFound(format!(
+            "{} not found in archive",
+            binary_name
+        )))
+    }
+
+    /// Create symlink to binary
+    fn create_symlink(&self, binary_path: &PathBuf, symlink_path: &PathBuf) -> Result<()> {
+        // Remove existing symlink if present
+        if symlink_path.exists() || symlink_path.is_symlink() {
+            std::fs::remove_file(symlink_path)?;
+        }
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(binary_path, symlink_path)?;
+        }
+
+        #[cfg(windows)]
+        {
+            std::os::windows::fs::symlink_file(binary_path, symlink_path)?;
+        }
+
+        Ok(())
     }
 
     /// Download a binary from URL to path with progress bar

@@ -8,6 +8,9 @@ pub enum InstallerError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
+    #[error("IO error: {0}")]
+    IoError(String),
+
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
 
@@ -28,6 +31,9 @@ pub enum InstallerError {
 
     #[error("Download failed: {0}")]
     DownloadFailed(String),
+
+    #[error("Extraction failed: {0}")]
+    ExtractFailed(String),
 
     #[error("Installation failed: {0}")]
     InstallFailed(String),

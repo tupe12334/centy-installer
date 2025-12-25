@@ -155,7 +155,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "centy-installer"
+name = "centy"
 version = "0.1.0"
 dependencies = [
  "clap",

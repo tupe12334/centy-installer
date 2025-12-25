@@ -196,7 +196,7 @@ impl Installer {
                 archive.unpack(&temp_extract)?;
 
                 // Find and move the binary
-                let found = self.find_binary_in_dir(&temp_extract, binary_name)?;
+                let found = Self::find_binary_in_dir(&temp_extract, binary_name)?;
                 if let Some(parent) = dest_path.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
@@ -214,7 +214,7 @@ impl Installer {
                     .extract(&temp_extract)
                     .map_err(|e| InstallerError::ExtractFailed(e.to_string()))?;
 
-                let found = self.find_binary_in_dir(&temp_extract, binary_name)?;
+                let found = Self::find_binary_in_dir(&temp_extract, binary_name)?;
                 if let Some(parent) = dest_path.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
@@ -229,7 +229,7 @@ impl Installer {
     }
 
     /// Find binary in extracted directory (searches recursively)
-    fn find_binary_in_dir(&self, dir: &PathBuf, binary_name: &str) -> Result<PathBuf> {
+    fn find_binary_in_dir(dir: &PathBuf, binary_name: &str) -> Result<PathBuf> {
         // First check directly in dir
         let direct = dir.join(binary_name);
         if direct.exists() && direct.is_file() {
@@ -248,7 +248,7 @@ impl Installer {
                     }
                 }
             } else if path.is_dir() {
-                if let Ok(found) = self.find_binary_in_dir(&path, binary_name) {
+                if let Ok(found) = Self::find_binary_in_dir(&path, binary_name) {
                     return Ok(found);
                 }
             }

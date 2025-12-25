@@ -1,9 +1,19 @@
 [package]
-name = "centy-installer"
+name = "centy"
 version = "0.1.0"
 edition = "2021"
-description = "Installer for Centy TUI and TUI Manager binaries"
+description = "Centy CLI - Install and run Centy tools"
 authors = ["Centy"]
+repository = "https://github.com/centy-io/centy-installer"
+license = "MIT"
+
+[[bin]]
+name = "centy"
+path = "src/main.rs"
+
+[lib]
+name = "centy_installer"
+path = "src/lib.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

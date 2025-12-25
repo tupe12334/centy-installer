@@ -3,8 +3,8 @@
 # Usage: curl -fsSL https://github.com/centy-io/centy-installer/releases/latest/download/install.sh | sh
 #
 # Environment variables:
-#   VERSION    - Install a specific version (e.g., VERSION=1.2.3)
-#   BINARIES   - Space-separated list of binaries to install (default: all)
+#   VERSION     - Install a specific version (e.g., VERSION=1.2.3)
+#   BINARIES    - Space-separated list of binaries to install (default: centy-daemon)
 #   INSTALL_DIR - Custom installation directory (default: ~/.centy/bin)
 
 set -e
@@ -18,12 +18,15 @@ NC='\033[0m' # No Color
 
 # Configuration
 GITHUB_ORG="centy-io"
-DEFAULT_INSTALL_DIR="${HOME}/.centy/bin"
+DEFAULT_INSTALL_DIR="${HOME}/.centy"
 INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
+BIN_DIR="${INSTALL_DIR}/bin"
+VERSIONS_DIR="${INSTALL_DIR}/versions"
 
-# All available binaries
-ALL_BINARIES="centy-daemon centy-tui centy-daemon-tui tui-manager"
-BINARIES="${BINARIES:-$ALL_BINARIES}"
+# Default binaries to install (only those with releases)
+# Available: centy-daemon, centy-tui, centy-daemon-tui, tui-manager
+DEFAULT_BINARIES="centy-daemon"
+BINARIES="${BINARIES:-$DEFAULT_BINARIES}"
 
 # Print functions
 info() {
@@ -80,6 +83,19 @@ detect_arch() {
     esac
 }
 
+# Get archive extension based on OS
+get_archive_ext() {
+    os="$1"
+    case "$os" in
+        pc-windows-msvc)
+            echo "zip"
+            ;;
+        *)
+            echo "tar.gz"
+            ;;
+    esac
+}
+
 # Check for required commands
 check_requirements() {
     if command -v curl >/dev/null 2>&1; then
@@ -88,6 +104,12 @@ check_requirements() {
         DOWNLOAD_CMD="wget"
     else
         error "Either curl or wget is required"
+        exit 1
+    fi
+
+    # Check for tar (needed for extraction)
+    if ! command -v tar >/dev/null 2>&1; then
+        error "tar is required for extraction"
         exit 1
     fi
 }
@@ -122,7 +144,7 @@ get_latest_version() {
 
     # Fetch release info and extract tag_name
     response=$(fetch_json "$api_url" 2>/dev/null) || {
-        error "Failed to fetch release info for $repo"
+        error "Failed to fetch release info for $repo (repo may not exist or have no releases)"
         return 1
     }
 
@@ -130,12 +152,32 @@ get_latest_version() {
     version=$(echo "$response" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
 
     if [ -z "$version" ]; then
-        error "Could not determine latest version for $repo"
+        error "Could not determine latest version for $repo (no releases found)"
         return 1
     fi
 
-    # Strip leading 'v' if present
-    echo "$version" | sed 's/^v//'
+    # Return version with 'v' prefix intact for URL construction
+    echo "$version"
+}
+
+# Extract archive
+extract_archive() {
+    archive="$1"
+    dest_dir="$2"
+    ext="$3"
+
+    case "$ext" in
+        tar.gz)
+            tar -xzf "$archive" -C "$dest_dir"
+            ;;
+        zip)
+            unzip -q "$archive" -d "$dest_dir"
+            ;;
+        *)
+            error "Unknown archive format: $ext"
+            return 1
+            ;;
+    esac
 }
 
 # Install a single binary
@@ -150,51 +192,95 @@ install_binary() {
         version=$(get_latest_version "$binary") || return 1
     fi
 
-    info "  Version: $version"
+    # Ensure version has 'v' prefix for URL
+    case "$version" in
+        v*) ;;
+        *) version="v${version}" ;;
+    esac
+
+    # Version without 'v' for display
+    version_display=$(echo "$version" | sed 's/^v//')
+    info "  Version: $version_display"
 
     # Build target string
     os=$(detect_os)
     arch=$(detect_arch)
     target="${arch}-${os}"
+    ext=$(get_archive_ext "$os")
 
     # Build download URL
-    download_url="https://github.com/${GITHUB_ORG}/${binary}/releases/download/v${version}/${binary}-${target}"
+    # Format: {binary}-{version}-{arch}-{os}.{ext}
+    # Example: centy-daemon-v0.1.6-x86_64-apple-darwin.tar.gz
+    archive_name="${binary}-${version}-${target}.${ext}"
+    download_url="https://github.com/${GITHUB_ORG}/${binary}/releases/download/${version}/${archive_name}"
 
     # Create installation directory
-    install_path="${INSTALL_DIR}/${binary}/${version}"
+    install_path="${VERSIONS_DIR}/${binary}/${version_display}"
     mkdir -p "$install_path"
+    mkdir -p "$BIN_DIR"
 
-    # Download binary
-    binary_path="${install_path}/${binary}"
+    # Create temp directory for download and extraction
+    tmp_dir=$(mktemp -d)
+    trap "rm -rf '$tmp_dir'" EXIT
+
+    # Download archive
+    archive_path="${tmp_dir}/${archive_name}"
     info "  Downloading from: $download_url"
 
-    if ! download "$download_url" "$binary_path"; then
+    if ! download "$download_url" "$archive_path"; then
         error "Failed to download $binary"
-        rm -f "$binary_path"
         return 1
     fi
+
+    # Extract archive
+    info "  Extracting..."
+    if ! extract_archive "$archive_path" "$tmp_dir" "$ext"; then
+        error "Failed to extract $binary"
+        return 1
+    fi
+
+    # Find and move the binary
+    # The binary should be in the extracted directory
+    if [ -f "${tmp_dir}/${binary}" ]; then
+        mv "${tmp_dir}/${binary}" "${install_path}/${binary}"
+    elif [ -f "${tmp_dir}/${binary}/${binary}" ]; then
+        mv "${tmp_dir}/${binary}/${binary}" "${install_path}/${binary}"
+    else
+        # Try to find it
+        found_binary=$(find "$tmp_dir" -name "$binary" -type f | head -1)
+        if [ -n "$found_binary" ]; then
+            mv "$found_binary" "${install_path}/${binary}"
+        else
+            error "Could not find $binary in extracted archive"
+            return 1
+        fi
+    fi
+
+    binary_path="${install_path}/${binary}"
 
     # Make executable
     chmod +x "$binary_path"
 
     # Create symlink in bin directory
-    symlink_path="${INSTALL_DIR}/${binary}"
+    symlink_path="${BIN_DIR}/${binary}"
     rm -f "$symlink_path"
     ln -s "${binary_path}" "$symlink_path"
 
-    success "Installed $binary $version to $binary_path"
+    success "Installed $binary $version_display"
+    info "  Binary: $binary_path"
+    info "  Symlink: $symlink_path"
 }
 
 # Setup PATH in shell config
 setup_path() {
     # Check if already in PATH
     case ":$PATH:" in
-        *":${INSTALL_DIR}:"*)
+        *":${BIN_DIR}:"*)
             return 0
             ;;
     esac
 
-    info "Adding ${INSTALL_DIR} to PATH..."
+    info "Adding ${BIN_DIR} to PATH..."
 
     # Detect shell and config file
     shell_name=$(basename "$SHELL")
@@ -218,10 +304,10 @@ setup_path() {
     esac
 
     # Add to config if not already present
-    path_export="export PATH=\"\${PATH}:${INSTALL_DIR}\""
+    path_export="export PATH=\"\${PATH}:${BIN_DIR}\""
 
     if [ -f "$config_file" ]; then
-        if ! grep -q "${INSTALL_DIR}" "$config_file" 2>/dev/null; then
+        if ! grep -q "${BIN_DIR}" "$config_file" 2>/dev/null; then
             echo "" >> "$config_file"
             echo "# Added by Centy installer" >> "$config_file"
             echo "$path_export" >> "$config_file"
@@ -244,12 +330,12 @@ print_summary() {
     echo ""
     echo "Installed binaries:"
     for binary in $BINARIES; do
-        if [ -L "${INSTALL_DIR}/${binary}" ]; then
-            echo "  - ${INSTALL_DIR}/${binary}"
+        if [ -L "${BIN_DIR}/${binary}" ]; then
+            echo "  - ${BIN_DIR}/${binary}"
         fi
     done
     echo ""
-    echo "To get started, ensure ${INSTALL_DIR} is in your PATH,"
+    echo "To get started, ensure ${BIN_DIR} is in your PATH,"
     echo "then run any of the installed binaries."
     echo ""
 }
@@ -267,28 +353,38 @@ main() {
 
     # Show configuration
     info "Installation directory: ${INSTALL_DIR}"
+    info "Binaries directory: ${BIN_DIR}"
     info "Binaries to install: ${BINARIES}"
     info "Platform: $(detect_arch)-$(detect_os)"
     echo ""
 
-    # Create base directory
-    mkdir -p "${INSTALL_DIR}"
+    # Create base directories
+    mkdir -p "${BIN_DIR}"
+    mkdir -p "${VERSIONS_DIR}"
 
     # Install each binary
     failed=""
+    installed=""
     for binary in $BINARIES; do
-        if ! install_binary "$binary" "$VERSION"; then
+        if install_binary "$binary" "$VERSION"; then
+            installed="${installed} ${binary}"
+        else
             failed="${failed} ${binary}"
         fi
         echo ""
     done
 
-    # Setup PATH
-    setup_path
+    # Setup PATH only if something was installed
+    if [ -n "$installed" ]; then
+        setup_path
+    fi
 
     # Print summary
     if [ -n "$failed" ]; then
         warn "Some binaries failed to install:${failed}"
+        if [ -n "$installed" ]; then
+            print_summary
+        fi
         exit 1
     else
         print_summary

@@ -2,7 +2,9 @@ use crate::error::{InstallerError, Result};
 use std::path::PathBuf;
 
 /// Represents the installation paths for Centy binaries
-/// Structure: ~/.centy/bin/<project>/<version>/<binary>
+/// Structure:
+///   - Versions: ~/.centy/versions/<project>/<version>/<binary>
+///   - Symlinks: ~/.centy/bin/<binary>
 #[derive(Debug, Clone)]
 pub struct InstallPaths {
     /// Base directory: ~/.centy
@@ -22,24 +24,34 @@ impl InstallPaths {
         &self.base_dir
     }
 
-    /// Get the bin directory (~/.centy/bin)
+    /// Get the bin directory for symlinks (~/.centy/bin)
     pub fn bin_dir(&self) -> PathBuf {
         self.base_dir.join("bin")
     }
 
-    /// Get the project directory (~/.centy/bin/<project>)
-    pub fn project_dir(&self, project: &str) -> PathBuf {
-        self.bin_dir().join(project)
+    /// Get the versions directory (~/.centy/versions)
+    pub fn versions_dir(&self) -> PathBuf {
+        self.base_dir.join("versions")
     }
 
-    /// Get the version directory (~/.centy/bin/<project>/<version>)
+    /// Get the project directory (~/.centy/versions/<project>)
+    pub fn project_dir(&self, project: &str) -> PathBuf {
+        self.versions_dir().join(project)
+    }
+
+    /// Get the version directory (~/.centy/versions/<project>/<version>)
     pub fn version_dir(&self, project: &str, version: &str) -> PathBuf {
         self.project_dir(project).join(version)
     }
 
-    /// Get the full binary path (~/.centy/bin/<project>/<version>/<binary>)
+    /// Get the full binary path (~/.centy/versions/<project>/<version>/<binary>)
     pub fn binary_path(&self, project: &str, version: &str, binary: &str) -> PathBuf {
         self.version_dir(project, version).join(binary)
+    }
+
+    /// Get the symlink path for a binary (~/.centy/bin/<binary>)
+    pub fn symlink_path(&self, binary: &str) -> PathBuf {
+        self.bin_dir().join(binary)
     }
 
     /// Create all necessary directories for a binary installation
@@ -51,13 +63,13 @@ impl InstallPaths {
 
     /// List all installed projects
     pub fn list_projects(&self) -> Result<Vec<String>> {
-        let bin_dir = self.bin_dir();
-        if !bin_dir.exists() {
+        let versions_dir = self.versions_dir();
+        if !versions_dir.exists() {
             return Ok(Vec::new());
         }
 
         let mut projects = Vec::new();
-        for entry in std::fs::read_dir(bin_dir)? {
+        for entry in std::fs::read_dir(versions_dir)? {
             let entry = entry?;
             if entry.file_type()?.is_dir() {
                 if let Some(name) = entry.file_name().to_str() {
@@ -141,7 +153,10 @@ mod tests {
     fn test_paths() {
         let paths = InstallPaths::new().unwrap();
 
-        let bin_path = paths.binary_path("tui", "1.0.0", "centy-tui");
-        assert!(bin_path.ends_with(".centy/bin/tui/1.0.0/centy-tui"));
+        let bin_path = paths.binary_path("centy-tui", "1.0.0", "centy-tui");
+        assert!(bin_path.ends_with(".centy/versions/centy-tui/1.0.0/centy-tui"));
+
+        let symlink = paths.symlink_path("centy-tui");
+        assert!(symlink.ends_with(".centy/bin/centy-tui"));
     }
 }

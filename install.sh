@@ -24,8 +24,8 @@ BIN_DIR="${INSTALL_DIR}/bin"
 VERSIONS_DIR="${INSTALL_DIR}/versions"
 
 # Default binaries to install (only those with releases)
-# Available: centy-daemon, centy-tui, centy-daemon-tui, tui-manager
-DEFAULT_BINARIES="centy-daemon"
+# Available: centy-daemon, centy-tui, tui-manager
+DEFAULT_BINARIES="centy-daemon centy-tui"
 BINARIES="${BINARIES:-$DEFAULT_BINARIES}"
 
 # Print functions
@@ -45,7 +45,7 @@ error() {
     printf "${RED}error${NC}: %s\n" "$1" >&2
 }
 
-# Detect operating system
+# Detect operating system (new format: apple-darwin, unknown-linux-gnu)
 detect_os() {
     case "$(uname -s)" in
         Darwin*)
@@ -56,6 +56,25 @@ detect_os() {
             ;;
         MINGW*|MSYS*|CYGWIN*)
             echo "pc-windows-msvc"
+            ;;
+        *)
+            error "Unsupported operating system: $(uname -s)"
+            exit 1
+            ;;
+    esac
+}
+
+# Detect operating system (legacy format: darwin, linux, windows)
+detect_os_legacy() {
+    case "$(uname -s)" in
+        Darwin*)
+            echo "darwin"
+            ;;
+        Linux*)
+            echo "linux"
+            ;;
+        MINGW*|MSYS*|CYGWIN*)
+            echo "windows"
             ;;
         *)
             error "Unsupported operating system: $(uname -s)"
@@ -180,6 +199,18 @@ extract_archive() {
     esac
 }
 
+# Try to download from a URL, return 0 on success, 1 on failure
+try_download() {
+    url="$1"
+    output="$2"
+
+    if [ "$DOWNLOAD_CMD" = "curl" ]; then
+        curl -fsSL "$url" -o "$output" 2>/dev/null
+    else
+        wget -q "$url" -O "$output" 2>/dev/null
+    fi
+}
+
 # Install a single binary
 install_binary() {
     binary="$1"
@@ -202,18 +233,6 @@ install_binary() {
     version_display=$(echo "$version" | sed 's/^v//')
     info "  Version: $version_display"
 
-    # Build target string
-    os=$(detect_os)
-    arch=$(detect_arch)
-    target="${arch}-${os}"
-    ext=$(get_archive_ext "$os")
-
-    # Build download URL
-    # Format: {binary}-{version}-{arch}-{os}.{ext}
-    # Example: centy-daemon-v0.1.6-x86_64-apple-darwin.tar.gz
-    archive_name="${binary}-${version}-${target}.${ext}"
-    download_url="https://github.com/${GITHUB_ORG}/${binary}/releases/download/${version}/${archive_name}"
-
     # Create installation directory
     install_path="${VERSIONS_DIR}/${binary}/${version_display}"
     mkdir -p "$install_path"
@@ -223,37 +242,80 @@ install_binary() {
     tmp_dir=$(mktemp -d)
     trap "rm -rf '$tmp_dir'" EXIT
 
-    # Download archive
-    archive_path="${tmp_dir}/${archive_name}"
-    info "  Downloading from: $download_url"
+    # Build target strings for both formats
+    os=$(detect_os)
+    os_legacy=$(detect_os_legacy)
+    arch=$(detect_arch)
+    ext=$(get_archive_ext "$os")
 
-    if ! download "$download_url" "$archive_path"; then
-        error "Failed to download $binary"
+    # Try multiple download URL formats
+    downloaded=false
+    is_archive=false
+
+    # Format 1: New format with archive (centy-daemon style)
+    # Example: centy-daemon-v0.1.6-x86_64-apple-darwin.tar.gz
+    url1="https://github.com/${GITHUB_ORG}/${binary}/releases/download/${version}/${binary}-${version}-${arch}-${os}.${ext}"
+    archive_path="${tmp_dir}/download.${ext}"
+
+    info "  Trying: ${binary}-${version}-${arch}-${os}.${ext}"
+    if try_download "$url1" "$archive_path"; then
+        downloaded=true
+        is_archive=true
+    fi
+
+    # Format 2: Legacy format raw binary (centy-tui style)
+    # Example: centy-tui-darwin-aarch64
+    if [ "$downloaded" = "false" ]; then
+        url2="https://github.com/${GITHUB_ORG}/${binary}/releases/download/${version}/${binary}-${os_legacy}-${arch}"
+        raw_path="${tmp_dir}/${binary}"
+
+        info "  Trying: ${binary}-${os_legacy}-${arch}"
+        if try_download "$url2" "$raw_path"; then
+            downloaded=true
+            is_archive=false
+        fi
+    fi
+
+    # Format 3: Legacy with .exe for Windows
+    if [ "$downloaded" = "false" ] && [ "$os_legacy" = "windows" ]; then
+        url3="https://github.com/${GITHUB_ORG}/${binary}/releases/download/${version}/${binary}-${os_legacy}-${arch}.exe"
+        raw_path="${tmp_dir}/${binary}"
+
+        info "  Trying: ${binary}-${os_legacy}-${arch}.exe"
+        if try_download "$url3" "$raw_path"; then
+            downloaded=true
+            is_archive=false
+        fi
+    fi
+
+    if [ "$downloaded" = "false" ]; then
+        error "Failed to download $binary (tried multiple URL formats)"
         return 1
     fi
 
-    # Extract archive
-    info "  Extracting..."
-    if ! extract_archive "$archive_path" "$tmp_dir" "$ext"; then
-        error "Failed to extract $binary"
-        return 1
-    fi
-
-    # Find and move the binary
-    # The binary should be in the extracted directory
-    if [ -f "${tmp_dir}/${binary}" ]; then
-        mv "${tmp_dir}/${binary}" "${install_path}/${binary}"
-    elif [ -f "${tmp_dir}/${binary}/${binary}" ]; then
-        mv "${tmp_dir}/${binary}/${binary}" "${install_path}/${binary}"
-    else
-        # Try to find it
-        found_binary=$(find "$tmp_dir" -name "$binary" -type f | head -1)
-        if [ -n "$found_binary" ]; then
-            mv "$found_binary" "${install_path}/${binary}"
-        else
-            error "Could not find $binary in extracted archive"
+    # Handle archive vs raw binary
+    if [ "$is_archive" = "true" ]; then
+        info "  Extracting..."
+        if ! extract_archive "$archive_path" "$tmp_dir" "$ext"; then
+            error "Failed to extract $binary"
             return 1
         fi
+
+        # Find the binary in extracted contents
+        if [ -f "${tmp_dir}/${binary}" ]; then
+            mv "${tmp_dir}/${binary}" "${install_path}/${binary}"
+        else
+            found_binary=$(find "$tmp_dir" -name "$binary" -type f 2>/dev/null | head -1)
+            if [ -n "$found_binary" ]; then
+                mv "$found_binary" "${install_path}/${binary}"
+            else
+                error "Could not find $binary in extracted archive"
+                return 1
+            fi
+        fi
+    else
+        # Raw binary - just move it
+        mv "${tmp_dir}/${binary}" "${install_path}/${binary}"
     fi
 
     binary_path="${install_path}/${binary}"

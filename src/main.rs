@@ -197,6 +197,5 @@ async fn run(cli: Cli) -> centy_installer::Result<()> {
 }
 
 fn parse_project(s: &str) -> centy_installer::Result<Project> {
-    Project::parse(s)
-        .ok_or_else(|| centy_installer::InstallerError::ProjectNotFound(s.to_string()))
+    Project::parse(s).ok_or_else(|| centy_installer::InstallerError::ProjectNotFound(s.to_string()))
 }

@@ -103,7 +103,13 @@ impl Installer {
         let archive_name = format!("{}-{}-{}.{}", binary_name, version_tag, target, ext);
 
         let url = if let Some(base_url) = &self.config.download_base_url {
-            format!("{}/{}/{}/{}", base_url, project.name(), version, archive_name)
+            format!(
+                "{}/{}/{}/{}",
+                base_url,
+                project.name(),
+                version,
+                archive_name
+            )
         } else {
             // GitHub releases URL
             format!(

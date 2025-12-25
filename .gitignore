@@ -1,4 +1,3 @@
-/target
-node_modules/
-bin/centy
-bin/centy.exe
+# OS files
+.DS_Store
+Thumbs.db
